@@ -1,0 +1,318 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>城市跑酷小游戏</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;background:#142039;color:white;
+  font-family:Arial,"Microsoft YaHei",sans-serif;
+  display:flex;justify-content:center;padding:18px;
+}
+.game{width:100%;max-width:900px}
+h1{text-align:center}
+.info{display:flex;justify-content:space-around;margin:15px 0}
+.info div{background:#253653;padding:10px 20px;border-radius:10px}
+canvas{
+  width:100%;height:auto;background:#9bdcf5;
+  border:3px solid white;border-radius:12px;
+  display:block;touch-action:manipulation;
+}
+.controls{display:flex;justify-content:center;gap:15px;margin-top:15px}
+button{
+  border:0;border-radius:10px;padding:14px 25px;
+  font-size:17px;font-weight:bold;cursor:pointer;
+  background:#ffd166;color:#172033;
+}
+#restart{background:#50d890}
+p{text-align:center;color:#c8d5e8;font-size:13px}
+</style>
+</head>
+<body>
+<div class="game">
+<h1>🏃 城市跑酷</h1>
+
+<div class="info">
+  <div>分数：<span id="score">0</span></div>
+  <div>最高分：<span id="best">0</span></div>
+</div>
+
+<canvas id="game" width="850" height="400"></canvas>
+
+<div class="controls">
+  <button onclick="jump()">⬆ 跳跃</button>
+  <button onclick="slide()">⬇ 下滑</button>
+  <button id="restart" onclick="startGame()">重新开始</button>
+</div>
+
+<p>电脑：空格键/↑跳跃，↓下滑。手机：点击按钮操作。</p>
+<p id="message">点击重新开始，开始跑酷！</p>
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+let score=0;
+let best=Number(localStorage.getItem("parkourBest")||0);
+let speed=5;
+let running=false;
+let obstacles=[];
+let frame=0;
+
+const ground=330;
+
+const player={
+  x:100,
+  y:ground-55,
+  width:35,
+  height:55,
+  velocity:0,
+  jumping:false,
+  sliding:false,
+  slideTime:0
+};
+
+document.getElementById("best").textContent=best;
+
+function drawBackground(){
+  ctx.fillStyle="#9bdcf5";
+  ctx.fillRect(0,0,850,400);
+
+  // 远处的云
+  ctx.fillStyle="white";
+  ctx.beginPath();
+  ctx.arc(140,75,22,0,Math.PI*2);
+  ctx.arc(165,70,28,0,Math.PI*2);
+  ctx.arc(190,78,20,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(560,110,18,0,Math.PI*2);
+  ctx.arc(585,100,25,0,Math.PI*2);
+  ctx.arc(610,110,18,0,Math.PI*2);
+  ctx.fill();
+
+  // 城市建筑
+  ctx.fillStyle="#829bb5";
+  for(let i=0;i<850;i+=100){
+    let height=70+(i*7%90);
+    ctx.fillRect(i,ground-height,65,height);
+    ctx.fillStyle="#ffe9a8";
+    for(let j=0;j<3;j++){
+      ctx.fillRect(i+12+j*17,ground-height+15,8,12);
+    }
+    ctx.fillStyle="#829bb5";
+  }
+
+  // 地面
+  ctx.fillStyle="#37465c";
+  ctx.fillRect(0,ground,850,70);
+
+  ctx.fillStyle="#f5d77a";
+  for(let i=0;i<850;i+=100){
+    ctx.fillRect((i-frame*speed%100),ground+30,50,5);
+  }
+}
+
+function drawPlayer(){
+  let h=player.sliding?28:player.height;
+  let y=player.sliding?ground-28:player.y;
+
+  // 身体
+  ctx.fillStyle="#2357bd";
+  ctx.fillRect(player.x,y+18,player.width,h-18);
+
+  // 头
+  ctx.fillStyle="#ffcf9e";
+  ctx.beginPath();
+  ctx.arc(player.x+18,y+10,13,0,Math.PI*2);
+  ctx.fill();
+
+  // 眼睛
+  ctx.fillStyle="#222";
+  ctx.fillRect(player.x+23,y+7,3,3);
+
+  // 腿
+  ctx.strokeStyle="#172b50";
+  ctx.lineWidth=6;
+  ctx.beginPath();
+
+  if(player.sliding){
+    ctx.moveTo(player.x+5,y+25);
+    ctx.lineTo(player.x-12,y+27);
+    ctx.moveTo(player.x+25,y+25);
+    ctx.lineTo(player.x+42,y+27);
+  }else{
+    let swing=Math.sin(frame*0.3)*9;
+    ctx.moveTo(player.x+10,y+45);
+    ctx.lineTo(player.x+10+swing,y+57);
+    ctx.moveTo(player.x+25,y+45);
+    ctx.lineTo(player.x+25-swing,y+57);
+  }
+  ctx.stroke();
+}
+
+function createObstacle(){
+  let type=Math.random()<0.5?"box":"barrier";
+  obstacles.push({
+    x:870,
+    y:type==="box"?ground-38:ground-65,
+    width:type==="box"?38:65,
+    height:type==="box"?38:18,
+    type:type
+  });
+}
+
+function drawObstacles(){
+  obstacles.forEach(o=>{
+    if(o.type==="box"){
+      ctx.fillStyle="#b96a36";
+      ctx.fillRect(o.x,o.y,o.width,o.height);
+      ctx.strokeStyle="#75401f";
+      ctx.lineWidth=3;
+      ctx.strokeRect(o.x,o.y,o.width,o.height);
+    }else{
+      ctx.fillStyle="#f04c4c";
+      ctx.fillRect(o.x,o.y,o.width,o.height);
+      ctx.fillStyle="#fff";
+      ctx.fillRect(o.x+12,o.y,10,o.height);
+      ctx.fillRect(o.x+42,o.y,10,o.height);
+    }
+  });
+}
+
+function jump(){
+  if(!running)return;
+  if(!player.jumping&&!player.sliding){
+    player.velocity=-14;
+    player.jumping=true;
+  }
+}
+
+function slide(){
+  if(!running||player.jumping)return;
+  player.sliding=true;
+  player.slideTime=35;
+}
+
+function collision(a,b){
+  let ax=a.x, ay=a.sliding?ground-28:a.y;
+  let aw=a.width, ah=a.sliding?28:a.height;
+
+  return ax+aw-5>b.x+4 &&
+         ax+5<b.x+b.width-4 &&
+         ay+ah-4>b.y+4 &&
+         ay+4<b.y+b.height-4;
+}
+
+function endGame(){
+  running=false;
+  document.getElementById("message").textContent=
+    "游戏结束！你的分数是："+Math.floor(score)+"，点击重新开始再挑战！";
+}
+
+function update(){
+  if(!running)return;
+
+  frame++;
+  score+=0.12;
+  speed=5+Math.min(score/100,7);
+
+  document.getElementById("score").textContent=Math.floor(score);
+
+  // 跳跃物理
+  if(player.jumping){
+    player.y+=player.velocity;
+    player.velocity+=0.65;
+
+    if(player.y>=ground-player.height){
+      player.y=ground-player.height;
+      player.jumping=false;
+      player.velocity=0;
+    }
+  }
+
+  if(player.sliding){
+    player.slideTime--;
+    if(player.slideTime<=0)player.sliding=false;
+  }
+
+  // 生成障碍
+  if(frame%Math.max(45,Math.floor(95-score/15))===0){
+    createObstacle();
+  }
+
+  obstacles.forEach(o=>o.x-=speed);
+  obstacles=obstacles.filter(o=>o.x+o.width>0);
+
+  for(let o of obstacles){
+    if(collision(player,o)){
+      endGame();
+      return;
+    }
+  }
+
+  if(Math.floor(score)>best){
+    best=Math.floor(score);
+    localStorage.setItem("parkourBest",best);
+    document.getElementById("best").textContent=best;
+  }
+}
+
+function draw(){
+  drawBackground();
+  drawObstacles();
+  drawPlayer();
+
+  if(!running){
+    ctx.fillStyle="#172033aa";
+    ctx.fillRect(0,0,850,400);
+    ctx.fillStyle="white";
+    ctx.textAlign="center";
+    ctx.font="bold 30px Arial";
+    ctx.fillText("城市跑酷",425,175);
+    ctx.font="18px Arial";
+    ctx.fillText("点击「重新开始」进入游戏",425,215);
+  }
+}
+
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function startGame(){
+  score=0;
+  speed=5;
+  frame=0;
+  obstacles=[];
+  player.y=ground-player.height;
+  player.velocity=0;
+  player.jumping=false;
+  player.sliding=false;
+  running=true;
+  document.getElementById("message").textContent="跑起来！注意躲避障碍！";
+}
+
+document.addEventListener("keydown",e=>{
+  if(e.code==="Space"||e.code==="ArrowUp"){
+    e.preventDefault();
+    jump();
+  }
+  if(e.code==="ArrowDown")slide();
+  if(e.code==="KeyR")startGame();
+});
+
+canvas.addEventListener("pointerdown",()=>{
+  if(running)jump();
+});
+
+loop();
+</script>
+</body>
+</html>
