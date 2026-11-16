@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#15233d">
+<title>城市跑酷 - 修复版</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; min-height:100%; background:#101a2d; color:#fff; font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif; }
+  body { padding:16px; display:flex; justify-content:center; }
+  .app { width:min(960px,100%); }
+  h1 { margin:4px 0 12px; text-align:center; font-size:clamp(22px,5vw,32px); }
+  .hud { display:flex; justify-content:space-between; gap:10px; margin:10px 0; }
+  .pill { background:#243653; border:1px solid #3b5275; border-radius:12px; padding:9px 14px; font-weight:700; }
+  .stage { position:relative; overflow:hidden; border:2px solid #dce8ff; border-radius:14px; background:#9bdcf5; box-shadow:0 12px 35px #0005; }
+  canvas { display:block; width:100%; height:auto; aspect-ratio: 850 / 400; touch-action:manipulation; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:20px; background:#10213b99; }
+  .overlay.hidden { display:none; }
+  .overlay h2 { margin:0 0 8px; font-size:clamp(24px,6vw,38px); }
+  .overlay p { margin:0 0 16px; }
+  .controls { display:flex; justify-content:center; flex-wrap:wrap; gap:12px; margin:14px 0; }
+  button { border:0; border-radius:12px; padding:13px 22px; background:#ffd166; color:#17233a; font-size:16px; font-weight:800; cursor:pointer; touch-action:manipulation; }
+  button:active { transform:scale(.97); }
+  button.secondary { background:#54d69a; }
+  .help { color:#c3d1e7; text-align:center; font-size:13px; line-height:1.7; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>🏃 城市跑酷</h1>
+  <div class="hud">
+    <div class="pill">分数：<span id="score">0</span></div>
+    <div class="pill">最高分：<span id="best">0</span></div>
+  </div>
+  <div class="stage">
+    <canvas id="gameCanvas" width="850" height="400" aria-label="跑酷游戏画面"></canvas>
+    <div class="overlay" id="overlay">
+      <h2 id="overlayTitle">城市跑酷</h2>
+      <p id="overlayText">跳过箱子，躲开路障，尽可能跑得更远！</p>
+      <button class="secondary" id="startBtn">开始游戏</button>
+    </div>
+  </div>
+  <div class="controls">
+    <button id="jumpBtn">⬆ 跳跃</button>
+    <button id="slideBtn">⬇ 下滑</button>
+    <button class="secondary" id="restartBtn">重新开始</button>
+  </div>
+  <div class="help">电脑：空格键 / ↑ 跳跃，↓ 下滑，R 重新开始。<br>手机或平板：点击按钮，也可以点击游戏画面跳跃。</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d");
+  const scoreEl = document.getElementById("score");
+  const bestEl = document.getElementById("best");
+  const overlay = document.getElementById("overlay");
+  const overlayTitle = document.getElementById("overlayTitle");
+  const overlayText = document.getElementById("overlayText");
+  const startBtn = document.getElementById("startBtn");
+
+  if (!ctx) {
+    overlayTitle.textContent = "浏览器不支持画布";
+    overlayText.textContent = "请使用较新的 Safari、Chrome 或 Edge 打开此文件。";
+    return;
+  }
+
+  const W = 850, H = 400, GROUND = 326;
+  let state = "ready";
+  let score = 0, best = 0, frame = 0, speed = 5;
+  let obstacles = [], clouds = [];
+  let lastTime = 0, rafId = 0;
+  const player = { x:105, y:GROUND-58, w:38, h:58, vy:0, jumping:false, sliding:false, slideUntil:0 };
+
+  try { best = Number(localStorage.getItem("cityParkourBest") || 0) || 0; } catch (_) {}
+  bestEl.textContent = best;
+
+  function reset() {
+    score = 0; frame = 0; speed = 5; obstacles = [];
+    player.y = GROUND-player.h; player.vy = 0;
+    player.jumping = false; player.sliding = false; player.slideUntil = 0;
+    scoreEl.textContent = "0";
+  }
+
+  function startGame() {
+    reset();
+    state = "running";
+    overlay.classList.add("hidden");
+    lastTime = 0;
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  }
+
+  function finishGame() {
+    state = "over";
+    overlayTitle.textContent = "游戏结束！";
+    overlayText.textContent = "本次得分：" + Math.floor(score) + "　再试一次，挑战更高分！";
+    startBtn.textContent = "再玩一次";
+    overlay.classList.remove("hidden");
+  }
+
+  function jump() {
+    if (state !== "running") return;
+    if (!player.jumping && !player.sliding) {
+      player.vy = -14.5;
+      player.jumping = true;
+    }
+  }
+
+  function slide() {
+    if (state !== "running" || player.jumping) return;
+    player.sliding = true;
+    player.slideUntil = frame + 42;
+  }
+
+  function spawnObstacle() {
+    const low = Math.random() < 0.62;
+    obstacles.push({
+      x: W + 10,
+      y: low ? GROUND-42 : GROUND-76,
+      w: low ? 40 : 76,
+      h: low ? 42 : 20,
+      type: low ? "box" : "bar"
+    });
+  }
+
+  function hit(a, b) {
+    const ph = a.sliding ? 29 : a.h;
+    const py = a.sliding ? GROUND-ph : a.y;
+    const left = a.x+6, right = a.x+a.w-5;
+    const top = py+4, bottom = py+ph-3;
+    return right > b.x+5 && left < b.x+b.w-5 && bottom > b.y+4 && top < b.y+b.h-3;
+  }
+
+  function update(dt) {
+    if (state !== "running") return;
+    const step = Math.min(dt / 16.67, 2.2);
+    frame += step;
+    score += 0.12 * step;
+    speed = Math.min(11, 5 + score / 115);
+    scoreEl.textContent = String(Math.floor(score));
+
+    if (player.jumping) {
+      player.y += player.vy * step;
+      player.vy += 0.68 * step;
+      if (player.y >= GROUND-player.h) {
+        player.y = GROUND-player.h;
+        player.vy = 0;
+        player.jumping = false;
+      }
+    }
+    if (player.sliding && frame >= player.slideUntil) player.sliding = false;
+
+    if (frame > 35 && frame % 1 < step && (obstacles.length === 0 || obstacles[obstacles.length-1].x < W-250)) {
+      if (Math.random() < 0.45) spawnObstacle();
+    }
+    obstacles.forEach(o => o.x -= speed * step);
+    obstacles = obstacles.filter(o => o.x + o.w > -5);
+
+    for (const o of obstacles) {
+      if (hit(player, o)) { finishGame(); break; }
+    }
+
+    if (Math.floor(score) > best) {
+      best = Math.floor(score);
+      bestEl.textContent = best;
+      try { localStorage.setItem("cityParkourBest", String(best)); } catch (_) {}
+    }
+  }
+
+  function draw() {
+    // sky
+    const sky = ctx.createLinearGradient(0,0,0,H);
+    sky.addColorStop(0,"#83d5f2"); sky.addColorStop(1,"#d9f4ff");
+    ctx.fillStyle = sky; ctx.fillRect(0,0,W,H);
+
+    // sun
+    ctx.fillStyle = "#fff2ad"; ctx.beginPath(); ctx.arc(735,70,34,0,Math.PI*2); ctx.fill();
+
+    // clouds
+    ctx.fillStyle = "#fff";
+    const cloudOffset = (frame*0.35)%W;
+    [[130,78],[440,120],[760,155]].forEach(([x,y],i)=>{
+      const cx = (x-cloudOffset+W+W)%W;
+      ctx.beginPath(); ctx.arc(cx,y,17,0,Math.PI*2); ctx.arc(cx+22,y-9,23,0,Math.PI*2); ctx.arc(cx+47,y,16,0,Math.PI*2); ctx.fill();
+    });
+
+    // skyline
+    for (let i=0;i<11;i++) {
+      const bw=54, x=i*82-((frame*0.65)%82), bh=70+((i*37)%85);
+      ctx.fillStyle = i%2 ? "#829bb6" : "#718ba8";
+      ctx.fillRect(x,GROUND-bh,bw,bh);
+      ctx.fillStyle="#ffe7a5";
+      for(let wy=GROUND-bh+13;wy<GROUND-12;wy+=23)
+        for(let wx=x+10;wx<x+bw-7;wx+=19) ctx.fillRect(wx,wy,8,11);
+    }
+
+    // ground
+    ctx.fillStyle="#35445b"; ctx.fillRect(0,GROUND,W,H-GROUND);
+    ctx.fillStyle="#f6d36f";
+    for(let x=-((frame*speed)%100);x<W;x+=100) ctx.fillRect(x,GROUND+31,48,5);
+
+    // obstacles
+    obstacles.forEach(o=>{
+      if(o.type==="box"){
+        ctx.fillStyle="#b96b39"; ctx.fillRect(o.x,o.y,o.w,o.h);
+        ctx.strokeStyle="#75401f"; ctx.lineWidth=3; ctx.strokeRect(o.x,o.y,o.w,o.h);
+        ctx.beginPath(); ctx.moveTo(o.x,o.y+o.h); ctx.lineTo(o.x+o.w,o.y); ctx.stroke();
+      } else {
+        ctx.fillStyle="#e84d55"; ctx.fillRect(o.x,o.y,o.w,o.h);
+        ctx.fillStyle="#fff"; ctx.fillRect(o.x+13,o.y,10,o.h); ctx.fillRect(o.x+49,o.y,10,o.h);
+      }
+    });
+
+    // player
+    const ph = player.sliding ? 29 : player.h;
+    const py = player.sliding ? GROUND-ph : player.y;
+    ctx.fillStyle="#2459bd";
+    ctx.fillRect(player.x,py+17,player.w,ph-17);
+    ctx.fillStyle="#ffd0a4";
+    ctx.beginPath(); ctx.arc(player.x+19,py+12,14,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#18243a"; ctx.fillRect(player.x+24,py+9,3,3);
+    ctx.strokeStyle="#182e55"; ctx.lineWidth=6; ctx.lineCap="round";
+    ctx.beginPath();
+    if(player.sliding){
+      ctx.moveTo(player.x+8,py+24); ctx.lineTo(player.x-5,py+27);
+      ctx.moveTo(player.x+29,py+24); ctx.lineTo(player.x+43,py+27);
+    } else {
+      const swing = state==="running" ? Math.sin(frame*0.35)*9 : 0;
+      ctx.moveTo(player.x+11,py+46); ctx.lineTo(player.x+11+swing,py+57);
+      ctx.moveTo(player.x+28,py+46); ctx.lineTo(player.x+28-swing,py+57);
+    }
+    ctx.stroke();
+
+    if(state==="ready"){
+      ctx.fillStyle="#17304f"; ctx.textAlign="center"; ctx.font="bold 24px sans-serif";
+      ctx.fillText("准备好开始跑酷了吗？",W/2,250);
+    }
+  }
+
+  function loop(timestamp) {
+    rafId = 0;
+    const dt = lastTime ? timestamp-lastTime : 16.67;
+    lastTime = timestamp;
+    update(dt);
+    draw();
+    if (state === "running") rafId = requestAnimationFrame(loop);
+    else lastTime = 0;
+  }
+
+  function renderIdle() { draw(); }
+
+  startBtn.addEventListener("click", startGame);
+  document.getElementById("jumpBtn").addEventListener("click", jump);
+  document.getElementById("slideBtn").addEventListener("click", slide);
+  document.getElementById("restartBtn").addEventListener("click", startGame);
+  canvas.addEventListener("pointerdown", function () {
+    if (state === "running") jump();
+  });
+
+  document.addEventListener("keydown", function(e) {
+    if (e.code==="Space" || e.code==="ArrowUp") { e.preventDefault(); jump(); }
+    else if (e.code==="ArrowDown") { e.preventDefault(); slide(); }
+    else if (e.code==="KeyR") startGame();
+    else if ((e.code==="Enter") && state!=="running") startGame();
+  });
+
+  window.addEventListener("beforeunload", function() {
+    if (rafId) cancelAnimationFrame(rafId);
+  });
+
+  renderIdle();
+})();
+</script>
+</body>
+</html>
